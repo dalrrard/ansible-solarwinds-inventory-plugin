@@ -213,11 +213,32 @@ class QuerySolarwinds(Iterator[DT]):
                 yield item
 
     def _query_swis(self, cls_name: str, node_fields: list[str]) -> Iterator[DT]:
-        """Send request to Solarwinds SWIS using SWQL."""
+        """Send request to Solarwinds SWIS using SWQL and store response.
+
+        Pass the response to the `_create_dynamic_dataclass` method to create a
+        dataclass for the response and then create a generator of instances of
+        that dataclass.
+
+        Parameters
+        ----------
+        cls_name : str
+            Name of the dynamic dataclass to use for the response
+        node_fields : list[str]
+            List of fields to query. SysName will always be included.
+
+        Returns
+        -------
+        Iterator[DT]
+            The next item in the iterator.
+        """
         if node_fields is None:
             raise AnsibleOptionsError("No fields specified.") from None
+
+        # Add SysName to the list of fields to query
+        # so that we can use it as the hostname later.
         _node_fields = set(node_fields)
         _node_fields.add("SysName")
+
         query_string = ", ".join(f"CN.{field_name}" for field_name in _node_fields)
         payload = {
             "query": (
@@ -249,6 +270,22 @@ class QuerySolarwinds(Iterator[DT]):
     def _build_url(
         self, swis_action: str, entity: Optional[str], swis_verb: Optional[str]
     ) -> str:
+        """Build a complete endpoint URL for the Solarwinds API.
+
+        Parameters
+        ----------
+        swis_action : str
+            The action to perform on the Solarwinds API.
+        entity : Optional[str], optional
+            The entity to perform the action on.
+        swis_verb : Optional[str], optional
+            The verb to perform the action with.
+
+        Returns
+        -------
+        str
+            The concatenated URL.
+        """
         url_builder = [f"{self.url}{swis_action}"]
         if entity is not None:
             url_builder.append(f"{entity}")
@@ -264,6 +301,24 @@ class QuerySolarwinds(Iterator[DT]):
         entity: Optional[str] = None,
         swis_verb: Optional[str] = None,
     ) -> _UrlopenRet:
+        """POST a message to Solarwinds using the SWIS API.
+
+        Parameters
+        ----------
+        payload : Union[int, dict[str, Any]]
+            The payload to POST to the Solarwinds API.
+        swis_action : str
+            The action to perform on the Solarwinds API.
+        entity : Optional[str], optional
+            The entity to perform the action on.
+        swis_verb : Optional[str], optional
+            The verb to perform the action with.
+
+        Returns
+        -------
+        _UrlopenRet
+            The response from the Solarwinds API.
+        """
         complete_url = self._build_url(swis_action, entity, swis_verb)
         try:
             response = self.request.post(
@@ -283,6 +338,23 @@ class QuerySolarwinds(Iterator[DT]):
         return response
 
     def _create_dynamic_dataclass(self, cls_name: str, node_fields: set[str]) -> type:
+        """Create a dataclass to store the response from Solarwinds in.
+
+        This method also adds the field names to the `QuerySolarwinds.__dict__`
+        for later use.
+
+        Parameters
+        ----------
+        cls_name : str
+            Name of the dynamic dataclass to use for the response
+        node_fields : set[str]
+            List of fields to query. SysName will always be included.
+
+        Returns
+        -------
+        type
+            The dynamic dataclass.
+        """
         cleaned_fields = InventoryModule.clean_vars(node_fields)
         dynamic_dataclass = make_dataclass(cls_name, cleaned_fields, bases=(DynamicDT,))
         self.__dict__[cls_name] = cleaned_fields
@@ -396,7 +468,21 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
         )
 
     def verify_file(self, path: AnyStr) -> bool:
-        """Verify that this is a valid file to consume."""
+        """Verify that this is a valid file to consume.
+
+        If the file does not exist or does not end with the correct string,
+        then Ansible will raise an error.
+
+        Parameters
+        ----------
+        path : AnyStr
+            The path to the file to verify.
+
+        Returns
+        -------
+        bool
+            True if the file is valid, otherwise False.
+        """
         valid = False
         _path: str = to_text(path)
         valid_files = (
@@ -447,6 +533,15 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
                         self.inventory.set_variable(host_name, field_name, value)
 
     def _set_credentials(self, item: T, host_name: str) -> None:
+        """Set credentials for the hosts in the inventory.
+
+        Parameters
+        ----------
+        item : T
+            The `InventoryResponse` item from Solarwinds.
+        host_name : str
+            The host name.
+        """
         if connection_profile := item.connection_profile_details:
             if username := connection_profile.user_name:
                 self.inventory.set_variable(
@@ -474,7 +569,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
         path: AnyStr,
         cache: bool = False,
     ) -> None:
-        """Parse inventory file."""
+        """Parse the inventory file."""
         super(InventoryModule, self).parse(inventory, loader, path, cache)
         self._sanitize_group_name = InventoryModule.clean_vars
         display.vvv("Reading configuration data from: %s" % to_text(path))
