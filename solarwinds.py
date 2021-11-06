@@ -6,8 +6,6 @@
 from __future__ import absolute_import, division, print_function
 
 import itertools
-import types
-from logging import debug
 
 __metaclass__ = type
 
@@ -51,7 +49,7 @@ DOCUMENTATION = r"""
 
 import json
 import re
-from dataclasses import dataclass, fields, make_dataclass
+from dataclasses import dataclass, make_dataclass
 from functools import cache
 from typing import (
     Any,
@@ -101,55 +99,19 @@ class ConnectionProfileResponse:
     use_for_auto_detect: bool
 
 
-# @dataclass
-# class InventoryResponse:
-#     """Model for the inventory query response from the Solarwinds API."""
-
-#     agent_ip: str
-#     sys_name: str
-#     owner: str
-#     mls: str
-#     layer: str
-#     tier: str
-#     priority: str
-#     region: str
-#     site: str
-#     site_code: str = field(init=False)
-#     connection_profile: int
-#     machine_type: str
-#     os_version: str
-#     os_image: str
-#     connection_profile_details: Optional[ConnectionProfileResponse] = None
-
-#     def __post_init__(self) -> None:
-#         """Post-initialization hook for InventoryResponse."""
-#         self.site_code = self.site.split("_", maxsplit=1)[0]
-
-#     @classmethod
-#     def get_field_names(cls) -> Iterator[str]:
-#         field_names = (getattr(field_name, "name") for field_name in fields(cls))
-
-#         return field_names
-
-
-def get_field_names(cls: object) -> Iterator[str]:
-    field_names = (getattr(field_name, "name") for field_name in fields(cls))
-
-    return field_names
-
-
 class QuerySolarwinds(Iterator[Type[T]]):
     """Query Solarwinds for inventory."""
 
     def __init__(
         self,
         base_url: str,
-        port: Optional[int],
         username: str,
         password: str,
-        verify: bool,
+        port: int = 17778,
         additional_properties: Optional[list[str]] = None,
+        verify: bool = True,
     ) -> None:
+
         self.request = Request(
             url_username=str(username),
             url_password=str(password),
@@ -162,19 +124,6 @@ class QuerySolarwinds(Iterator[Type[T]]):
         else:
             self.port = port
         self.url = f"{self.base_url}:{self.port}/SolarWinds/InformationService/v3/Json/"
-        # self.inventory_payload = {
-        #     "query": (
-        #         "SELECT "
-        #         "    CN.AgentIP, "
-        #         "    CN.SysName, "
-        #         "    CN.ConnectionProfile, "
-        #         "    CN.MachineType, "
-        #         "    CN.OSVersion, "
-        #         "    CN.OSImage "
-        #         "FROM Cirrus.Nodes CN "
-        #         "    WHERE CN.Vendor = 'Cisco' "
-        #     )
-        # }
         self.inventory_payload = [
             "AgentIP",
             "SysName",
@@ -209,30 +158,23 @@ class QuerySolarwinds(Iterator[Type[T]]):
         entity = "Cirrus.Nodes"
         swis_action = "Invoke"
         swis_verb = "GetConnectionProfile"
-        try:
-            response = self.request.post(
-                f"{self.url}{swis_action}/{entity}/{swis_verb}",
-                data=json.dumps([profile_id]),
-            )
-        except six.moves.urllib_error.HTTPError as exc:  # pylint: disable=no-member
-            raise AnsibleParserError(
-                "The server could not fulfill the request.\nReason: %s. %s"
-                % (to_native(exc), to_native(exc.read())),
-            ) from None
-        except six.moves.urllib_error.URLError as exc:  # pylint: disable=no-member
-            raise AnsibleParserError(
-                "The server could not be reached. Reason: %s." % to_native(exc.reason)
-            ) from None
-        json_response = json.load(response)
+        response = self._post_message(profile_id, swis_action, entity, swis_verb)
+        json_response: dict[str, Any] = json.load(response)
+        cleaned_json = InventoryModule.clean_vars(json_response)
         if json_response:
-            return ConnectionProfileResponse(
-                **InventoryModule.clean_vars(json_response)
-            )
+            return ConnectionProfileResponse(**cleaned_json)
         return None
 
     def _get_connection_profiles(self) -> Iterator[Type[T]]:
         """Get connection profiles for each InventoryResponse item."""
-        self.InventoryResponse.append("connection_profile_details")
+        try:
+            self.InventoryResponse.append("connection_profile_details")
+        except AttributeError as exc:
+            raise AnsibleInternalError(
+                "Fatal internal error. QuerySolarwinds has no attribute"
+                " InventoryResponse. Exception: %s"
+                % to_native(exc)
+            ) from None
         for item in self._initial_inventory:
             profile_id: int = item.connection_profile
             if profile_id:
@@ -260,20 +202,7 @@ class QuerySolarwinds(Iterator[Type[T]]):
             )
         }
         swis_action = "Query"
-        try:
-            response = self.request.post(
-                f"{self.url}{swis_action}",
-                data=json.dumps(payload),
-            )
-        except six.moves.urllib_error.HTTPError as exc:  # pylint: disable=no-member
-            raise AnsibleParserError(
-                "The server could not fulfill the request.\nReason: %s. %s"
-                % (to_native(exc), to_native(exc.read())),
-            ) from None
-        except six.moves.urllib_error.URLError as exc:  # pylint: disable=no-member
-            raise AnsibleParserError(
-                "The server could not be reached. Reason: %s." % to_native(exc.reason)
-            ) from None
+        response = self._post_message(payload, swis_action)
 
         try:
             self._json_inventory_response: list[dict[str, Union[str, int]]] = json.load(
@@ -291,53 +220,40 @@ class QuerySolarwinds(Iterator[Type[T]]):
             for result in InventoryModule.clean_vars(self._json_inventory_response)
         )
 
+    def _build_url(self, swis_action, entity, swis_verb):
+        url_builder = [f"{self.url}{swis_action}"]
+        if entity is not None:
+            url_builder.append(f"{entity}")
+            if swis_verb is not None:
+                url_builder.append(f"{swis_verb}")
+        complete_url = "/".join(url_builder)
+        return complete_url
+
+    def _post_message(self, payload, swis_action, entity=None, swis_verb=None):
+        complete_url = self._build_url(swis_action, entity, swis_verb)
+        try:
+            response = self.request.post(
+                complete_url,
+                data=json.dumps([payload]),
+            )
+        except six.moves.urllib_error.HTTPError as exc:  # pylint: disable=no-member
+            raise AnsibleParserError(
+                "The server could not fulfill the request.\nReason: %s. %s"
+                % (to_native(exc), to_native(exc.read())),
+            ) from None
+        except six.moves.urllib_error.URLError as exc:  # pylint: disable=no-member
+            raise AnsibleParserError(
+                "The server could not be reached. Reason: %s." % to_native(exc.reason)
+            ) from None
+
+        return response
+
     def _create_dynamic_dataclass(self, cls_name: str, node_fields: set[str]) -> type:
         cleaned_fields = InventoryModule.clean_vars(node_fields)
         dynamic_dataclass = make_dataclass(cls_name, cleaned_fields)
         self.__dict__[cls_name] = cleaned_fields
 
         return dynamic_dataclass
-
-        # return (
-        #     InventoryResponse(**result)
-        #     for result in InventoryModule.clean_keys(self._json_inventory_response)
-        # )
-
-    # def _get_inventory(self) -> Iterator[InventoryResponse]:
-    #     """Send request to Solarwinds SWIS using SWQL.
-
-    #     Pull IP Address, Device Name, Owner, Layer, Site,
-    #     and Vendor then save to json file.
-    #     """
-    #     swis_action = "Query"
-    #     try:
-    #         response = self.request.post(
-    #             f"{self.url}{swis_action}",
-    #             data=json.dumps(self.inventory_payload),
-    #         )
-    #     except six.moves.urllib_error.HTTPError as exc:  # pylint: disable=no-member
-    #         raise AnsibleParserError(
-    #             "The server could not fulfill the request.\nReason: %s. %s"
-    #             % (to_native(exc), to_native(exc.read())),
-    #         ) from None
-    #     except six.moves.urllib_error.URLError as exc:  # pylint: disable=no-member
-    #         raise AnsibleParserError(
-    #             "The server could not be reached. Reason: %s." % to_native(exc.reason)
-    #         ) from None
-
-    #     try:
-    #         self._json_inventory_response: list[dict[str, Union[str, int]]] = json.load(
-    #             response
-    #         )["results"]
-    #     except KeyError:
-    #         raise AnsibleParserError(
-    #             "Unable to parse JSON response from Solarwinds."
-    #         ) from None
-
-    #     return (
-    #         InventoryResponse(**result)
-    #         for result in InventoryModule.clean_keys(self._json_inventory_response)
-    #     )
 
 
 class InventoryModule(BaseInventoryPlugin, Constructable):
@@ -346,12 +262,13 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
     def __init__(self) -> None:
         """Initialize InventoryModule."""
         super(InventoryModule, self).__init__()
-        self._plugin = ""
-        self._base_url = ""
-        self._api_port = 17778
-        self._username = ""
-        self._password = ""
-        self._verify_ssl = True
+        self._plugin: str = ""
+        self._base_url: str = ""
+        self._api_port: int = 17778
+        self._username: str = ""
+        self._password: str = ""
+        self._verify_ssl: bool = True
+        self._additional_properties: Optional[list[str]] = None
 
     @staticmethod
     def _fix_builtin_name_overrides(input_string: str) -> str:
@@ -417,11 +334,11 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
         """Populate inventory."""
         _raw_inventory = QuerySolarwinds(
             self._base_url,
-            self._api_port,
             self._username,
             self._password,
-            self._verify_ssl,
+            self._api_port,
             self._additional_properties,
+            self._verify_ssl,
         )
 
         inventory_fields = _raw_inventory.InventoryResponse
@@ -494,9 +411,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
                 "All options required: %s" % to_native(exc),
                 show_content=False,
             ) from None
-        self._api_port: int = self.get_option("api_port")
-        self._verify_ssl: bool = self.get_option("verify_ssl")
-        self._additional_properties: list[str] = self.get_option(
-            "additional_properties"
-        )
+        self._api_port = self.get_option("api_port")
+        self._verify_ssl = self.get_option("verify_ssl")
+        self._additional_properties = self.get_option("additional_properties")
         self._populate()
