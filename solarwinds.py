@@ -5,9 +5,6 @@
 # GNU General Public License v3.0+ (https://www.gnu.org/licenses/gpl-3.0.txt)
 from __future__ import absolute_import, division, print_function
 
-import itertools
-from urllib.request import _UrlopenRet
-
 __metaclass__ = type
 
 DOCUMENTATION = r"""
@@ -48,6 +45,7 @@ DOCUMENTATION = r"""
         - constructed
 """
 
+import itertools
 import json
 import re
 from dataclasses import dataclass, make_dataclass
@@ -63,6 +61,7 @@ from typing import (
     Union,
     overload,
 )
+from urllib.request import _UrlopenRet
 
 from ansible.errors import AnsibleInternalError, AnsibleOptionsError, AnsibleParserError
 from ansible.inventory.data import InventoryData
