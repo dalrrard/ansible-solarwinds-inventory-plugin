@@ -6,6 +6,7 @@
 from __future__ import absolute_import, division, print_function
 
 import itertools
+from urllib.request import _UrlopenRet
 
 __metaclass__ = type
 
@@ -54,10 +55,10 @@ from functools import cache
 from typing import (
     Any,
     AnyStr,
+    Generic,
     Iterable,
     Iterator,
     Optional,
-    Type,
     TypeVar,
     Union,
     overload,
@@ -78,12 +79,18 @@ from ansible.utils.display import Display
 
 display = Display()
 
-T = TypeVar("T")
+T = TypeVar("T")  # pylint: disable=invalid-name
+DT = TypeVar("DT")  # pylint: disable=invalid-name
+
+
+@dataclass
+class DynamicDT(Generic[DT]):
+    pass
 
 
 @dataclass
 class ConnectionProfileResponse:
-    """Model for the connection profile query response from the Solarwinds API."""
+    """Container for the connection profile query response from the Solarwinds API."""
 
     id_: int
     name: str
@@ -99,8 +106,8 @@ class ConnectionProfileResponse:
     use_for_auto_detect: bool
 
 
-class QuerySolarwinds(Iterator[Type[T]]):
-    """Query Solarwinds for inventory."""
+class QuerySolarwinds(Iterator[DT]):
+    """Query Solarwinds NCM Cirrus.Nodes for inventory."""
 
     def __init__(
         self,
@@ -111,7 +118,23 @@ class QuerySolarwinds(Iterator[Type[T]]):
         additional_properties: Optional[list[str]] = None,
         verify: bool = True,
     ) -> None:
+        """Set default values and initialize Solarwinds connection.
 
+        Parameters
+        ----------
+        base_url : str
+            Base URL of the Solarwinds NCM server
+        username : str
+            Solarwinds username (with domain if applicable)
+        password : str
+            Solarwinds password
+        port : int, optional
+            API port of the Solarwinds NCM server, by default 17778
+        additional_properties : Optional[list[str]], optional
+            Additional properties to include in the inventory, by default None
+        verify : bool, optional
+            Verify TLS/SSL certificate, by default True
+        """
         self.request = Request(
             url_username=str(username),
             url_password=str(password),
@@ -119,10 +142,7 @@ class QuerySolarwinds(Iterator[Type[T]]):
             validate_certs=verify,
         )
         self.base_url = base_url
-        if port is None:
-            self.port = 17778
-        else:
-            self.port = port
+        self.port = port
         self.url = f"{self.base_url}:{self.port}/SolarWinds/InformationService/v3/Json/"
         self.inventory_payload = [
             "AgentIP",
@@ -132,21 +152,31 @@ class QuerySolarwinds(Iterator[Type[T]]):
             "OSVersion",
             "OSImage",
         ]
-        self._initial_inventory: Iterator[Type[T]] = self._query_swis(
+        self._initial_inventory: Iterator[DT] = self._query_swis(
             "InventoryResponse", self.inventory_payload
         )
         self._inventory = self._get_connection_profiles()
         if additional_properties is not None:
-            self._custom_properties = self._query_swis(
+            self._custom_properties: Iterator[DT] = self._query_swis(
                 "CustomProperties", additional_properties
             )
             self._inventory = itertools.chain(self._inventory, self._custom_properties)
 
-    def __next__(self) -> Type[T]:
+    def __next__(self) -> DT:
+        """Return next item in the iterator."""
         return next(self._inventory)
 
-    def __iter__(self) -> Iterator[Type[T]]:
-        """Yield InventoryResponse item."""
+    def __iter__(self) -> Iterator[DT]:
+        """Yield the inventory items.
+
+        This will always yield InventoryResponse items.
+        If there are any CustomProperties items, they will be yielded as well.
+
+        Yields
+        ------
+        Iterator[DT]
+            The next item in the iterator.
+        """
         for item in self._inventory:
             yield item
 
@@ -165,7 +195,7 @@ class QuerySolarwinds(Iterator[Type[T]]):
             return ConnectionProfileResponse(**cleaned_json)
         return None
 
-    def _get_connection_profiles(self) -> Iterator[Type[T]]:
+    def _get_connection_profiles(self) -> Iterator[DT]:
         """Get connection profiles for each InventoryResponse item."""
         try:
             self.InventoryResponse.append("connection_profile_details")
@@ -182,12 +212,8 @@ class QuerySolarwinds(Iterator[Type[T]]):
                 item.connection_profile_details = profile
                 yield item
 
-    def _query_swis(self, cls_name: str, node_fields: list[str]) -> Iterator[Type[T]]:
-        """Send request to Solarwinds SWIS using SWQL.
-
-        Pull IP Address, Device Name, Owner, Layer, Site,
-        and Vendor then save to json file.
-        """
+    def _query_swis(self, cls_name: str, node_fields: list[str]) -> Iterator[DT]:
+        """Send request to Solarwinds SWIS using SWQL."""
         if node_fields is None:
             raise AnsibleOptionsError("No fields specified.") from None
         _node_fields = set(node_fields)
@@ -220,7 +246,9 @@ class QuerySolarwinds(Iterator[Type[T]]):
             for result in InventoryModule.clean_vars(self._json_inventory_response)
         )
 
-    def _build_url(self, swis_action, entity, swis_verb):
+    def _build_url(
+        self, swis_action: str, entity: Optional[str], swis_verb: Optional[str]
+    ) -> str:
         url_builder = [f"{self.url}{swis_action}"]
         if entity is not None:
             url_builder.append(f"{entity}")
@@ -229,7 +257,13 @@ class QuerySolarwinds(Iterator[Type[T]]):
         complete_url = "/".join(url_builder)
         return complete_url
 
-    def _post_message(self, payload, swis_action, entity=None, swis_verb=None):
+    def _post_message(
+        self,
+        payload: Union[int, dict[str, Any]],
+        swis_action: str,
+        entity: Optional[str] = None,
+        swis_verb: Optional[str] = None,
+    ) -> _UrlopenRet:
         complete_url = self._build_url(swis_action, entity, swis_verb)
         try:
             response = self.request.post(
@@ -250,17 +284,19 @@ class QuerySolarwinds(Iterator[Type[T]]):
 
     def _create_dynamic_dataclass(self, cls_name: str, node_fields: set[str]) -> type:
         cleaned_fields = InventoryModule.clean_vars(node_fields)
-        dynamic_dataclass = make_dataclass(cls_name, cleaned_fields)
+        dynamic_dataclass = make_dataclass(cls_name, cleaned_fields, bases=(DynamicDT,))
         self.__dict__[cls_name] = cleaned_fields
 
         return dynamic_dataclass
 
 
-class InventoryModule(BaseInventoryPlugin, Constructable):
+class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
+    """Main entrypoint for Ansible Inventory Plugin."""
+
     NAME = "solarwinds"
 
     def __init__(self) -> None:
-        """Initialize InventoryModule."""
+        """Initialize InventoryModule and set defaults."""
         super(InventoryModule, self).__init__()
         self._plugin: str = ""
         self._base_url: str = ""
@@ -272,12 +308,39 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
 
     @staticmethod
     def _fix_builtin_name_overrides(input_string: str) -> str:
+        """Append '_' to any string that exactly matches a builtin name.
+
+        Parameters
+        ----------
+        input_string : str
+            The string to check for builtin names.
+
+        Returns
+        -------
+        str
+            The input string with '_' appended to any builtin name.
+        """
         if input_string in six.moves.builtins.__dict__:
             return input_string + "_"
         return input_string
 
     @staticmethod
     def _to_snake_case(input_string: str) -> str:
+        """Convert CamelCase and PascalCase to snake_case.
+
+        Convert CamelCase and PascalCase to snake_case then pass the string
+        to _fix_builtin_name_overrides to check for builtin names.
+
+        Parameters
+        ----------
+        input_string : str
+            The string to convert.
+
+        Returns
+        -------
+        str
+            The converted string.
+        """
         pattern = re.compile(r"((?<=[a-z0-9])[A-Z]|(?!^)[A-Z](?=[a-z]))")
         substitution = r"_\1"
         return InventoryModule._fix_builtin_name_overrides(
@@ -303,6 +366,23 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
     def clean_vars(
         input_vars: Union[str, Iterable[Any], dict[str, Any]]
     ) -> Union[str, Iterable[Any], dict[str, Any]]:
+        """Clean inputs to conform to Python naming conventions.
+
+        This method tries to find the important string values in the
+        input by recursively type checking and decomposing input_vars
+        until it is just a string. It then passes the string to be converted
+        to snake case.
+
+        Parameters
+        ----------
+        input_vars : Union[str, Iterable[Any], dict[str, Any]]
+            Input to be cleaned.
+
+        Returns
+        -------
+        Union[str, Iterable[Any], dict[str, Any]]
+            Cleaned input.
+        """
         if isinstance(input_vars, str):
             return InventoryModule._to_snake_case(input_vars)
         if isinstance(input_vars, dict):
@@ -332,7 +412,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
 
     def _populate(self) -> None:
         """Populate inventory."""
-        _raw_inventory = QuerySolarwinds(
+        _raw_inventory: Iterator[T] = QuerySolarwinds(
             self._base_url,
             self._username,
             self._password,
@@ -341,9 +421,11 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
             self._verify_ssl,
         )
 
-        inventory_fields = _raw_inventory.InventoryResponse
+        inventory_fields = _raw_inventory.InventoryResponse  # pylint: disable=no-member
         if self._additional_properties:
-            inventory_fields += _raw_inventory.CustomProperties
+            inventory_fields += (
+                _raw_inventory.CustomProperties  # pylint: disable=no-member
+            )
 
         for item in _raw_inventory:
             host_name = self.inventory.add_host(item.sys_name)
@@ -364,7 +446,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable):
                         self.inventory.add_child(site_group, host_name)
                         self.inventory.set_variable(host_name, field_name, value)
 
-    def _set_credentials(self, item: "InventoryResponse", host_name: str) -> None:
+    def _set_credentials(self, item: T, host_name: str) -> None:
         if connection_profile := item.connection_profile_details:
             if username := connection_profile.user_name:
                 self.inventory.set_variable(
