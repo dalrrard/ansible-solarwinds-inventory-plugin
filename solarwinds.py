@@ -82,285 +82,6 @@ T = TypeVar("T")  # pylint: disable=invalid-name
 DT = TypeVar("DT")  # pylint: disable=invalid-name
 
 
-@dataclass
-class DynamicDT(Generic[DT]):
-    pass
-
-
-@dataclass
-class ConnectionProfileResponse:
-    """Container for the connection profile query response from the Solarwinds API."""
-
-    id_: int
-    name: str
-    user_name: str
-    password: str
-    enable_level: str
-    enable_password: str
-    execute_script_protocol: str
-    request_config_protocol: str
-    transfer_config_protocol: str
-    telnet_port: int
-    ssh_port: int
-    use_for_auto_detect: bool
-
-
-class QuerySolarwinds(Iterator[DT]):
-    """Query Solarwinds NCM Cirrus.Nodes for inventory."""
-
-    def __init__(
-        self,
-        base_url: str,
-        username: str,
-        password: str,
-        port: int = 17778,
-        additional_properties: Optional[list[str]] = None,
-        verify: bool = True,
-    ) -> None:
-        """Set default values and initialize Solarwinds connection.
-
-        Parameters
-        ----------
-        base_url : str
-            Base URL of the Solarwinds NCM server
-        username : str
-            Solarwinds username (with domain if applicable)
-        password : str
-            Solarwinds password
-        port : int, optional
-            API port of the Solarwinds NCM server, by default 17778
-        additional_properties : Optional[list[str]], optional
-            Additional properties to include in the inventory, by default None
-        verify : bool, optional
-            Verify TLS/SSL certificate, by default True
-        """
-        self.request = Request(
-            url_username=str(username),
-            url_password=str(password),
-            headers={"Content-type": "application/json"},
-            validate_certs=verify,
-        )
-        self.base_url = base_url
-        self.port = port
-        self.url = f"{self.base_url}:{self.port}/SolarWinds/InformationService/v3/Json/"
-        self.inventory_payload = [
-            "AgentIP",
-            "SysName",
-            "ConnectionProfile",
-            "MachineType",
-            "OSVersion",
-            "OSImage",
-        ]
-        self._initial_inventory: Iterator[DT] = self._query_swis(
-            "InventoryResponse", self.inventory_payload
-        )
-        self._inventory = self._get_connection_profiles()
-        if additional_properties is not None:
-            self._custom_properties: Iterator[DT] = self._query_swis(
-                "CustomProperties", additional_properties
-            )
-            self._inventory = itertools.chain(self._inventory, self._custom_properties)
-
-    def __next__(self) -> DT:
-        """Return next item in the iterator."""
-        return next(self._inventory)
-
-    def __iter__(self) -> Iterator[DT]:
-        """Yield the inventory items.
-
-        This will always yield InventoryResponse items.
-        If there are any CustomProperties items, they will be yielded as well.
-
-        Yields
-        ------
-        Iterator[DT]
-            The next item in the iterator.
-        """
-        for item in self._inventory:
-            yield item
-
-    @cache
-    def _get_connection_profile(
-        self, profile_id: int
-    ) -> Optional[ConnectionProfileResponse]:
-        """Get connection profile from Solarwinds and store in dataclass."""
-        entity = "Cirrus.Nodes"
-        swis_action = "Invoke"
-        swis_verb = "GetConnectionProfile"
-        response = self._post_message(profile_id, swis_action, entity, swis_verb)
-        json_response: dict[str, Any] = json.load(response)
-        cleaned_json = InventoryModule.clean_vars(json_response)
-        if json_response:
-            return ConnectionProfileResponse(**cleaned_json)
-        return None
-
-    def _get_connection_profiles(self) -> Iterator[DT]:
-        """Get connection profiles for each InventoryResponse item."""
-        try:
-            self.InventoryResponse.append("connection_profile_details")
-        except AttributeError as exc:
-            raise AnsibleInternalError(
-                "Fatal internal error. QuerySolarwinds has no attribute"
-                " InventoryResponse. Exception: %s"
-                % to_native(exc)
-            ) from None
-        for item in self._initial_inventory:
-            profile_id: int = item.connection_profile
-            if profile_id:
-                profile = self._get_connection_profile(profile_id)
-                item.connection_profile_details = profile
-                yield item
-
-    def _query_swis(self, cls_name: str, node_fields: list[str]) -> Iterator[DT]:
-        """Send request to Solarwinds SWIS using SWQL and store response.
-
-        Pass the response to the `_create_dynamic_dataclass` method to create a
-        dataclass for the response and then create a generator of instances of
-        that dataclass.
-
-        Parameters
-        ----------
-        cls_name : str
-            Name of the dynamic dataclass to use for the response
-        node_fields : list[str]
-            List of fields to query. SysName will always be included.
-
-        Returns
-        -------
-        Iterator[DT]
-            The next item in the iterator.
-        """
-        if node_fields is None:
-            raise AnsibleOptionsError("No fields specified.") from None
-
-        # Add SysName to the list of fields to query
-        # so that we can use it as the hostname later.
-        _node_fields = set(node_fields)
-        _node_fields.add("SysName")
-
-        query_string = ", ".join(f"CN.{field_name}" for field_name in _node_fields)
-        payload = {
-            "query": (
-                "SELECT "
-                f"    {query_string} "
-                "FROM Cirrus.Nodes CN "
-                "    WHERE CN.Vendor = 'Cisco' "
-            )
-        }
-        swis_action = "Query"
-        response = self._post_message(payload, swis_action)
-
-        try:
-            self._json_inventory_response: list[dict[str, Union[str, int]]] = json.load(
-                response
-            )["results"]
-        except KeyError:
-            raise AnsibleParserError(
-                "Unable to parse JSON response from Solarwinds."
-            ) from None
-
-        dynamic_dataclass = self._create_dynamic_dataclass(cls_name, _node_fields)
-
-        return (
-            dynamic_dataclass(**result)
-            for result in InventoryModule.clean_vars(self._json_inventory_response)
-        )
-
-    def _build_url(
-        self, swis_action: str, entity: Optional[str], swis_verb: Optional[str]
-    ) -> str:
-        """Build a complete endpoint URL for the Solarwinds API.
-
-        Parameters
-        ----------
-        swis_action : str
-            The action to perform on the Solarwinds API.
-        entity : Optional[str], optional
-            The entity to perform the action on.
-        swis_verb : Optional[str], optional
-            The verb to perform the action with.
-
-        Returns
-        -------
-        str
-            The concatenated URL.
-        """
-        url_builder = [f"{self.url}{swis_action}"]
-        if entity is not None:
-            url_builder.append(f"{entity}")
-            if swis_verb is not None:
-                url_builder.append(f"{swis_verb}")
-        complete_url = "/".join(url_builder)
-        return complete_url
-
-    def _post_message(
-        self,
-        payload: Union[int, dict[str, Any]],
-        swis_action: str,
-        entity: Optional[str] = None,
-        swis_verb: Optional[str] = None,
-    ) -> _UrlopenRet:
-        """POST a message to Solarwinds using the SWIS API.
-
-        Parameters
-        ----------
-        payload : Union[int, dict[str, Any]]
-            The payload to POST to the Solarwinds API.
-        swis_action : str
-            The action to perform on the Solarwinds API.
-        entity : Optional[str], optional
-            The entity to perform the action on.
-        swis_verb : Optional[str], optional
-            The verb to perform the action with.
-
-        Returns
-        -------
-        _UrlopenRet
-            The response from the Solarwinds API.
-        """
-        complete_url = self._build_url(swis_action, entity, swis_verb)
-        try:
-            response = self.request.post(
-                complete_url,
-                data=json.dumps([payload]),
-            )
-        except six.moves.urllib_error.HTTPError as exc:  # pylint: disable=no-member
-            raise AnsibleParserError(
-                "The server could not fulfill the request.\nReason: %s. %s"
-                % (to_native(exc), to_native(exc.read())),
-            ) from None
-        except six.moves.urllib_error.URLError as exc:  # pylint: disable=no-member
-            raise AnsibleParserError(
-                "The server could not be reached. Reason: %s." % to_native(exc.reason)
-            ) from None
-
-        return response
-
-    def _create_dynamic_dataclass(self, cls_name: str, node_fields: set[str]) -> type:
-        """Create a dataclass to store the response from Solarwinds in.
-
-        This method also adds the field names to the `QuerySolarwinds.__dict__`
-        for later use.
-
-        Parameters
-        ----------
-        cls_name : str
-            Name of the dynamic dataclass to use for the response
-        node_fields : set[str]
-            List of fields to query. SysName will always be included.
-
-        Returns
-        -------
-        type
-            The dynamic dataclass.
-        """
-        cleaned_fields = InventoryModule.clean_vars(node_fields)
-        dynamic_dataclass = make_dataclass(cls_name, cleaned_fields, bases=(DynamicDT,))
-        self.__dict__[cls_name] = cleaned_fields
-
-        return dynamic_dataclass
-
-
 class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
     """Main entrypoint for Ansible Inventory Plugin."""
 
@@ -591,3 +312,284 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
         self._verify_ssl = self.get_option("verify_ssl")
         self._additional_properties = self.get_option("additional_properties")
         self._populate()
+
+
+@dataclass
+class DynamicDT(Generic[DT]):
+    pass
+
+
+@dataclass
+class ConnectionProfileResponse:
+    """Container for the connection profile query response from the Solarwinds API."""
+
+    id_: int
+    name: str
+    user_name: str
+    password: str
+    enable_level: str
+    enable_password: str
+    execute_script_protocol: str
+    request_config_protocol: str
+    transfer_config_protocol: str
+    telnet_port: int
+    ssh_port: int
+    use_for_auto_detect: bool
+
+
+class QuerySolarwinds(Iterator[DT]):
+    """Query Solarwinds NCM Cirrus.Nodes for inventory."""
+
+    _sanitize_names = InventoryModule.clean_vars
+
+    def __init__(
+        self,
+        base_url: str,
+        username: str,
+        password: str,
+        port: int = 17778,
+        additional_properties: Optional[list[str]] = None,
+        verify: bool = True,
+    ) -> None:
+        """Set default values and initialize Solarwinds connection.
+
+        Parameters
+        ----------
+        base_url : str
+            Base URL of the Solarwinds NCM server
+        username : str
+            Solarwinds username (with domain if applicable)
+        password : str
+            Solarwinds password
+        port : int, optional
+            API port of the Solarwinds NCM server, by default 17778
+        additional_properties : Optional[list[str]], optional
+            Additional properties to include in the inventory, by default None
+        verify : bool, optional
+            Verify TLS/SSL certificate, by default True
+        """
+        self.request = Request(
+            url_username=str(username),
+            url_password=str(password),
+            headers={"Content-type": "application/json"},
+            validate_certs=verify,
+        )
+        self.base_url = base_url
+        self.port = port
+        self.url = f"{self.base_url}:{self.port}/SolarWinds/InformationService/v3/Json/"
+        self.inventory_payload = [
+            "AgentIP",
+            "SysName",
+            "ConnectionProfile",
+            "MachineType",
+            "OSVersion",
+            "OSImage",
+        ]
+        self._initial_inventory: Iterator[DT] = self._query_swis(
+            "InventoryResponse", self.inventory_payload
+        )
+        self._inventory = self._get_connection_profiles()
+        if additional_properties is not None:
+            self._custom_properties: Iterator[DT] = self._query_swis(
+                "CustomProperties", additional_properties
+            )
+            self._inventory = itertools.chain(self._inventory, self._custom_properties)
+
+    def __next__(self) -> DT:
+        """Return next item in the iterator."""
+        return next(self._inventory)
+
+    def __iter__(self) -> Iterator[DT]:
+        """Yield the inventory items.
+
+        This will always yield InventoryResponse items.
+        If there are any CustomProperties items, they will be yielded as well.
+
+        Yields
+        ------
+        Iterator[DT]
+            The next item in the iterator.
+        """
+        for item in self._inventory:
+            yield item
+
+    @cache
+    def _get_connection_profile(
+        self, profile_id: int
+    ) -> Optional[ConnectionProfileResponse]:
+        """Get connection profile from Solarwinds and store in dataclass."""
+        entity = "Cirrus.Nodes"
+        swis_action = "Invoke"
+        swis_verb = "GetConnectionProfile"
+        response = self._post_message(profile_id, swis_action, entity, swis_verb)
+        json_response: dict[str, Any] = json.load(response)
+        if json_response:
+            cleaned_json = QuerySolarwinds._sanitize_names(json_response)
+            return ConnectionProfileResponse(**cleaned_json)
+        return None
+
+    def _get_connection_profiles(self) -> Iterator[DT]:
+        """Get connection profiles for each InventoryResponse item."""
+        try:
+            self.InventoryResponse.append("connection_profile_details")
+        except AttributeError as exc:
+            raise AnsibleInternalError(
+                "Fatal internal error. QuerySolarwinds has no attribute"
+                " InventoryResponse. Exception: %s"
+                % to_native(exc)
+            ) from None
+        for item in self._initial_inventory:
+            profile_id: int = item.connection_profile
+            if profile_id:
+                profile = self._get_connection_profile(profile_id)
+                item.connection_profile_details = profile
+                yield item
+
+    def _query_swis(self, cls_name: str, node_fields: list[str]) -> Iterator[DT]:
+        """Send request to Solarwinds SWIS using SWQL and store response.
+
+        Pass the response to the `_create_dynamic_dataclass` method to create a
+        dataclass for the response and then create a generator of instances of
+        that dataclass.
+
+        Parameters
+        ----------
+        cls_name : str
+            Name of the dynamic dataclass to use for the response
+        node_fields : list[str]
+            List of fields to query. SysName will always be included.
+
+        Returns
+        -------
+        Iterator[DT]
+            The next item in the iterator.
+        """
+        if node_fields is None:
+            raise AnsibleOptionsError("No fields specified.") from None
+
+        # Add SysName to the list of fields to query
+        # so that we can use it as the hostname later.
+        _node_fields = set(node_fields)
+        _node_fields.add("SysName")
+
+        query_string = ", ".join(f"CN.{field_name}" for field_name in _node_fields)
+        payload = {
+            "query": (
+                "SELECT "
+                f"    {query_string} "
+                "FROM Cirrus.Nodes CN "
+                "    WHERE CN.Vendor = 'Cisco' "
+            )
+        }
+        swis_action = "Query"
+        response = self._post_message(payload, swis_action)
+
+        try:
+            self._json_inventory_response: list[dict[str, Union[str, int]]] = json.load(
+                response
+            )["results"]
+        except KeyError:
+            raise AnsibleParserError(
+                "Unable to parse JSON response from Solarwinds."
+            ) from None
+
+        dynamic_dataclass = self._create_dynamic_dataclass(cls_name, _node_fields)
+
+        return (
+            dynamic_dataclass(**result)
+            for result in QuerySolarwinds._sanitize_names(self._json_inventory_response)
+        )
+
+    def _build_url(
+        self, swis_action: str, entity: Optional[str], swis_verb: Optional[str]
+    ) -> str:
+        """Build a complete endpoint URL for the Solarwinds API.
+
+        Parameters
+        ----------
+        swis_action : str
+            The action to perform on the Solarwinds API.
+        entity : Optional[str], optional
+            The entity to perform the action on.
+        swis_verb : Optional[str], optional
+            The verb to perform the action with.
+
+        Returns
+        -------
+        str
+            The concatenated URL.
+        """
+        url_builder = [f"{self.url}{swis_action}"]
+        if entity is not None:
+            url_builder.append(f"{entity}")
+            if swis_verb is not None:
+                url_builder.append(f"{swis_verb}")
+        complete_url = "/".join(url_builder)
+        return complete_url
+
+    def _post_message(
+        self,
+        payload: Union[int, dict[str, Any]],
+        swis_action: str,
+        entity: Optional[str] = None,
+        swis_verb: Optional[str] = None,
+    ) -> _UrlopenRet:
+        """POST a message to Solarwinds using the SWIS API.
+
+        Parameters
+        ----------
+        payload : Union[int, dict[str, Any]]
+            The payload to POST to the Solarwinds API.
+        swis_action : str
+            The action to perform on the Solarwinds API.
+        entity : Optional[str], optional
+            The entity to perform the action on.
+        swis_verb : Optional[str], optional
+            The verb to perform the action with.
+
+        Returns
+        -------
+        _UrlopenRet
+            The response from the Solarwinds API.
+        """
+        complete_url = self._build_url(swis_action, entity, swis_verb)
+        try:
+            response = self.request.post(
+                complete_url,
+                data=json.dumps([payload]),
+            )
+        except six.moves.urllib_error.HTTPError as exc:  # pylint: disable=no-member
+            raise AnsibleParserError(
+                "The server could not fulfill the request.\nReason: %s. %s"
+                % (to_native(exc), to_native(exc.read())),
+            ) from None
+        except six.moves.urllib_error.URLError as exc:  # pylint: disable=no-member
+            raise AnsibleParserError(
+                "The server could not be reached. Reason: %s." % to_native(exc.reason)
+            ) from None
+
+        return response
+
+    def _create_dynamic_dataclass(self, cls_name: str, node_fields: set[str]) -> type:
+        """Create a dataclass to store the response from Solarwinds in.
+
+        This method also adds the field names to the `QuerySolarwinds.__dict__`
+        for later use.
+
+        Parameters
+        ----------
+        cls_name : str
+            Name of the dynamic dataclass to use for the response
+        node_fields : set[str]
+            List of fields to query. SysName will always be included.
+
+        Returns
+        -------
+        type
+            The dynamic dataclass.
+        """
+        cleaned_fields = QuerySolarwinds._sanitize_names(node_fields)
+        dynamic_dataclass = make_dataclass(cls_name, cleaned_fields, bases=(DynamicDT,))
+        setattr(self, cls_name, cleaned_fields)
+
+        return dynamic_dataclass
