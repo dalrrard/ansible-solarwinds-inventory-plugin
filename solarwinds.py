@@ -423,7 +423,8 @@ class QuerySolarwinds(Iterator[DT]):
         entity = "Cirrus.Nodes"
         swis_action = "Invoke"
         swis_verb = "GetConnectionProfile"
-        response = self._post_message(profile_id, swis_action, entity, swis_verb)
+        payload = {"id": profile_id}
+        response = self._post_message(payload, swis_action, entity, swis_verb)
         json_response: dict[str, Any] = json.load(response)
         if json_response:
             cleaned_json = QuerySolarwinds._sanitize_names(json_response)
@@ -531,7 +532,7 @@ class QuerySolarwinds(Iterator[DT]):
 
     def _post_message(
         self,
-        payload: Union[int, dict[str, Any]],
+        payload: Union[dict[str, int], dict[str, str]],
         swis_action: str,
         entity: Optional[str] = None,
         swis_verb: Optional[str] = None,
@@ -540,7 +541,7 @@ class QuerySolarwinds(Iterator[DT]):
 
         Parameters
         ----------
-        payload : Union[int, dict[str, Any]]
+        payload : Union[dict[str, int], dict[str, str]]
             The payload to POST to the Solarwinds API.
         swis_action : str
             The action to perform on the Solarwinds API.
@@ -558,7 +559,7 @@ class QuerySolarwinds(Iterator[DT]):
         try:
             response = self.request.post(
                 complete_url,
-                data=json.dumps([payload]),
+                data=json.dumps(payload),
             )
         except six.moves.urllib_error.HTTPError as exc:  # pylint: disable=no-member
             raise AnsibleParserError(
