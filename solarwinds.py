@@ -51,6 +51,7 @@ import re
 from dataclasses import dataclass, make_dataclass
 from functools import cache
 from typing import (
+    TYPE_CHECKING,
     Any,
     AnyStr,
     Generic,
@@ -61,20 +62,23 @@ from typing import (
     Union,
     overload,
 )
-from urllib.request import _UrlopenRet
 
 from ansible.errors import AnsibleInternalError, AnsibleOptionsError, AnsibleParserError
-from ansible.inventory.data import InventoryData
 from ansible.module_utils import six
 from ansible.module_utils.common.text.converters import to_native, to_text
 from ansible.module_utils.urls import Request
-from ansible.parsing.dataloader import DataLoader
 from ansible.plugins.inventory import (
     BaseInventoryPlugin,
     Constructable,
     to_safe_group_name,
 )
 from ansible.utils.display import Display
+
+if TYPE_CHECKING:
+    from urllib.request import _UrlopenRet
+
+    from ansible.inventory.data import InventoryData
+    from ansible.parsing.dataloader import DataLoader
 
 display = Display()
 
@@ -227,11 +231,9 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
             self._verify_ssl,
         )
 
-        inventory_fields = _raw_inventory.InventoryResponse  # pylint: disable=no-member
+        inventory_fields: list[str] = _raw_inventory.InventoryResponse
         if self._additional_properties:
-            inventory_fields += (
-                _raw_inventory.CustomProperties  # pylint: disable=no-member
-            )
+            inventory_fields += _raw_inventory.CustomProperties
 
         for item in _raw_inventory:
             host_name = self.inventory.add_host(item.sys_name)
@@ -284,8 +286,8 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
 
     def parse(
         self,
-        inventory: InventoryData,
-        loader: DataLoader,
+        inventory: "InventoryData",
+        loader: "DataLoader",
         path: AnyStr,
         cache: bool = False,
     ) -> None:
@@ -533,7 +535,7 @@ class QuerySolarwinds(Iterator[DT]):
         swis_action: str,
         entity: Optional[str] = None,
         swis_verb: Optional[str] = None,
-    ) -> _UrlopenRet:
+    ) -> "_UrlopenRet":
         """POST a message to Solarwinds using the SWIS API.
 
         Parameters
@@ -589,7 +591,9 @@ class QuerySolarwinds(Iterator[DT]):
             The dynamic dataclass.
         """
         cleaned_fields = QuerySolarwinds._sanitize_names(node_fields)
-        dynamic_dataclass = make_dataclass(cls_name, cleaned_fields, bases=(DynamicDT,))
+        dynamic_dataclass = make_dataclass(
+            cls_name, cleaned_fields, bases=(DynamicDT[DT],)
+        )
         setattr(self, cls_name, cleaned_fields)
 
         return dynamic_dataclass
