@@ -16,7 +16,7 @@
 <br />
 
 [![Project license](https://img.shields.io/github/license/dalrrard/ansible-solarwinds-inventory-plugin.svg?style=flat-square)](LICENSE)
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg?style=flat-square)](https://github.com/psf/black)
 
 [![Pull Requests welcome](https://img.shields.io/badge/PRs-welcome-ff69b4.svg?style=flat-square)](https://github.com/dalrrard/ansible-solarwinds-inventory-plugin/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22)
 [![code with love by dalrrard](https://img.shields.io/badge/%3C%2F%3E%20with%20%E2%99%A5%20by-dalrrard-ff1414.svg?style=flat-square)](https://github.com/dalrrard)
