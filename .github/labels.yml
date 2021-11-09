@@ -59,6 +59,9 @@
 - name: "help-wanted"
   color: 0e8a16
   description: "We need some extra helping hands or expertise in order to resolve this!"
+- name: "question"
+  color: d876e3
+  description: "Further information is requested."
 
 - name: "priority-critical"
   color: ee0701
