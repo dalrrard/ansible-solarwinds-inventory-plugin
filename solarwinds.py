@@ -55,9 +55,10 @@ from typing import (
     Any,
     AnyStr,
     Generic,
-    Iterable,
     Iterator,
+    MutableMapping,
     Optional,
+    Sequence,
     TypeVar,
     Union,
     overload,
@@ -150,18 +151,32 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
 
     @overload
     @staticmethod
-    def clean_vars(input_vars: dict[str, Any]) -> dict[str, Any]:
+    def clean_vars(input_vars: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
         ...
 
     @overload
     @staticmethod
-    def clean_vars(input_vars: Iterable[Any]) -> Iterable[Any]:
+    def clean_vars(
+        input_vars: Sequence[MutableMapping[str, Any]]
+    ) -> Sequence[MutableMapping[str, Any]]:
+        ...
+
+    @overload
+    @staticmethod
+    def clean_vars(input_vars: Union[set[str], Sequence[str]]) -> Sequence[str]:
         ...
 
     @staticmethod
     def clean_vars(
-        input_vars: Union[str, Iterable[Any], dict[str, Any]]
-    ) -> Union[str, Iterable[Any], dict[str, Any]]:
+        input_vars: Union[
+            str,
+            set[str],
+            Sequence[Union[str, MutableMapping[str, Any]]],
+            MutableMapping[str, Any],
+        ]
+    ) -> Union[
+        str, Sequence[Union[str, MutableMapping[str, Any]]], MutableMapping[str, Any]
+    ]:
         """Clean inputs to conform to Python naming conventions.
 
         This method tries to find the important string values in the
@@ -171,21 +186,20 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
 
         Parameters
         ----------
-        input_vars : Union[str, Iterable[Any], dict[str, Any]]
+        input_vars : Union[str, Iterable[Any], MutableMapping[str, Any]]
             Input to be cleaned.
 
         Returns
         -------
-        Union[str, Iterable[Any], dict[str, Any]]
+        Union[str, Iterable[Any], MutableMapping[str, Any]]
             Cleaned input.
         """
         if isinstance(input_vars, str):
             return InventoryModule._to_snake_case(input_vars)
-        if isinstance(input_vars, dict):
+        if isinstance(input_vars, MutableMapping):
             return {InventoryModule.clean_vars(k): v for k, v in input_vars.items()}
-        if isinstance(input_vars, Iterable):
-            if all(isinstance(i, (dict, str)) for i in input_vars):
-                return [InventoryModule.clean_vars(i) for i in input_vars]
+        if all(isinstance(i, (MutableMapping, str)) for i in input_vars):
+            return [InventoryModule.clean_vars(i) for i in input_vars]
         raise AnsibleInternalError(
             "clean_vars() was called with an unsupported type: %s"
             % to_native(type(input_vars))
