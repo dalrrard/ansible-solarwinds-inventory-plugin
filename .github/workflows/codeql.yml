@@ -11,6 +11,10 @@ jobs:
   codeql:
     name: 🏭 Scanning
     runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
     steps:
       - name: ⤵️ Check out code from GitHub
         uses: actions/checkout@v2
