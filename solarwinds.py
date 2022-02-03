@@ -255,7 +255,8 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
                 self.inventory.set_variable(host_name, "ansible_host", item.agent_ip)
                 self._set_credentials(item, host_name)
             for field_name in inventory_fields:
-                if value := getattr(item, field_name, None):
+                value = getattr(item, field_name, None)
+                if value:
                     if field_name not in [
                         "node_id",
                         "connection_profile_details",
@@ -290,24 +291,25 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
         host_name : str
             The host name.
         """
-        if connection_profile := item.connection_profile_details:
-            if username := connection_profile.user_name:
+        connection_profile = item.connection_profile_details
+        if connection_profile:
+            if connection_profile.user_name:
                 self.inventory.set_variable(
                     host_name,
                     "ansible_user",
-                    username,
+                    connection_profile.user_name,
                 )
-            if password := connection_profile.password:
+            if connection_profile.password:
                 self.inventory.set_variable(
                     host_name,
                     "ansible_password",
-                    password,
+                    connection_profile.password,
                 )
-            if enable_password := connection_profile.enable_password:
+            if connection_profile.enable_password:
                 self.inventory.set_variable(
                     host_name,
                     "ansible_become_password",
-                    enable_password,
+                    connection_profile.enable_password,
                 )
 
     def parse(
