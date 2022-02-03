@@ -267,6 +267,18 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
                         )
                         self.inventory.add_child(site_group, host_name)
                         self.inventory.set_variable(host_name, field_name, value)
+            self._set_composite_vars(
+                self.compose,
+                self.inventory.get_host(host_name).get_vars(),
+                host_name,
+                self.strict,
+            )
+            self._add_host_to_composed_groups(
+                self.groups, dict(), host_name, self.strict
+            )
+            self._add_host_to_keyed_groups(
+                self.keyed_groups, dict(), host_name, self.strict
+            )
 
     def _set_credentials(self, item: T, host_name: str) -> None:
         """Set credentials for the hosts in the inventory.
@@ -327,6 +339,10 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
         self._api_port = self.get_option("api_port")
         self._verify_ssl = self.get_option("verify_ssl")
         self._additional_properties = self.get_option("additional_properties")
+        self.compose = self.get_option("compose")
+        self.groups = self.get_option("groups")
+        self.keyed_groups = self.get_option("keyed_groups")
+        self.strict = self.get_option("strict")
         self._populate()
 
 
@@ -426,8 +442,7 @@ class QuerySolarwinds(Iterator[DT]):
         Iterator[DT]
             The next item in the iterator.
         """
-        for item in self._inventory:
-            yield item
+        yield from self._inventory
 
     @cache
     def _get_connection_profile(
