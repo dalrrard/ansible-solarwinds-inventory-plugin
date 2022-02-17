@@ -1,10 +1,17 @@
 ---
-name: Lock
+name: 'Lock Threads'
 
 on:
   schedule:
     - cron: "0 9 * * *"
   workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: lock
 
 jobs:
   lock:
