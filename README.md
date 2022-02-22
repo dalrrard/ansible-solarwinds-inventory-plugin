@@ -95,7 +95,7 @@ username: <vault encrypted username for Solarwinds>
 password: <vault encrypted password for Solarwinds>
 ```
 
-This details all available options.
+This details most available options. See Ansible's [constructed inventory documentation](https://docs.ansible.com/ansible/latest/collections/ansible/builtin/constructed_inventory.html#constructed-inventory) for more standard options.
 
 ```yaml
 ---
@@ -106,10 +106,13 @@ password: <vault encrypted password for Solarwinds>
 api_port: 17778
 verify_ssl: true
 additional_properties:
+  # Example options. You can use any field from the Cirrus.Nodes table.
   - Location
   - OwningGroup
   - Tenant
   - SiteID
+groups:
+  cellular_routers: "'-4G' in inventory_hostname or '-4g' in inventory_hostname"
 ```
 
 The `additional_properties` option is a list of column names from `Cirrus.Nodes` that you want to group the inventory by. The plugin automatically retrieves these fields from `Cirrus.Nodes`:

@@ -45,22 +45,25 @@ DOCUMENTATION = r"""
         - constructed
 """
 
+import functools
 import itertools
 import json
 import re
 from dataclasses import dataclass, make_dataclass
-from functools import cache
 from typing import (
     TYPE_CHECKING,
     Any,
     AnyStr,
+    Dict,
     Generic,
     Iterator,
-    MutableMapping,
+    List,
     Optional,
     Sequence,
+    Set,
     TypeVar,
     Union,
+    cast,
     overload,
 )
 
@@ -84,26 +87,62 @@ if TYPE_CHECKING:
 display = Display()
 
 T = TypeVar("T")  # pylint: disable=invalid-name
-DT = TypeVar("DT")  # pylint: disable=invalid-name
+# DT = TypeVar("DT")  # pylint: disable=invalid-name
 
 
-class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
-    """Main entrypoint for Ansible Inventory Plugin."""
+@dataclass
+class Credentials:
+    """Solarwinds username (with domain if applicable) and password."""
 
-    NAME = "solarwinds"
+    username: str = ""
+    password: str = ""
 
-    def __init__(self) -> None:
-        """Initialize InventoryModule and set defaults."""
-        super(InventoryModule, self).__init__()
-        self._plugin: str = ""
-        self._base_url: str = ""
-        self._api_port: int = 17778
-        self._username: str = ""
-        self._password: str = ""
-        self._verify_ssl: bool = True
-        self._additional_properties: Optional[list[str]] = None
 
-    @staticmethod
+@dataclass
+class Url:
+    """Base URL of the Solarwinds NCM server."""
+
+    base_url: str = ""
+    api_port: int = 17778
+    verify_ssl: bool = True
+
+
+@overload
+def variable_sanitizer(variable: str) -> str:
+    ...
+
+
+@overload
+def variable_sanitizer(variable: Dict[str, Any]) -> Dict[str, Any]:
+    ...
+
+
+@overload
+def variable_sanitizer(variable: Set[str]) -> List[str]:
+    ...
+
+
+@overload
+def variable_sanitizer(variable: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    ...
+
+
+@overload
+def variable_sanitizer(variable: List[str]) -> List[str]:
+    ...
+
+
+def variable_sanitizer(
+    variable: Union[
+        str,
+        Dict[str, Any],
+        Set[str],
+        Sequence[Dict[str, Any]],
+        List[str],
+    ]
+) -> Union[str, Dict[str, Any], List[str], List[Dict[str, Any]]]:
+    """Sanitize variable name for use in Ansible inventory."""
+
     def _fix_builtin_name_overrides(input_string: str) -> str:
         """Append '_' to any string that exactly matches a builtin name.
 
@@ -121,7 +160,6 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
             return input_string + "_"
         return input_string
 
-    @staticmethod
     def _to_snake_case(input_string: str) -> str:
         """Convert CamelCase and PascalCase to snake_case.
 
@@ -140,43 +178,39 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
         """
         pattern = re.compile(r"((?<=[a-z0-9])[A-Z]|(?!^)[A-Z](?=[a-z]))")
         substitution = r"_\1"
-        return InventoryModule._fix_builtin_name_overrides(
+        return _fix_builtin_name_overrides(
             re.sub(pattern, substitution, input_string).lower()
         )
 
     @overload
-    @staticmethod
     def clean_vars(input_vars: str) -> str:
         ...
 
     @overload
-    @staticmethod
-    def clean_vars(input_vars: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
+    def clean_vars(input_vars: Dict[str, Any]) -> Dict[str, Any]:
         ...
 
     @overload
-    @staticmethod
-    def clean_vars(
-        input_vars: Sequence[MutableMapping[str, Any]]
-    ) -> Sequence[MutableMapping[str, Any]]:
+    def clean_vars(input_vars: Set[str]) -> List[str]:
         ...
 
     @overload
-    @staticmethod
-    def clean_vars(input_vars: Union[set[str], Sequence[str]]) -> Sequence[str]:
+    def clean_vars(input_vars: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
         ...
 
-    @staticmethod
+    @overload
+    def clean_vars(input_vars: List[str]) -> List[str]:
+        ...
+
     def clean_vars(
         input_vars: Union[
             str,
-            set[str],
-            Sequence[Union[str, MutableMapping[str, Any]]],
-            MutableMapping[str, Any],
+            Dict[str, Any],
+            Set[str],
+            Sequence[Dict[str, Any]],
+            List[str],
         ]
-    ) -> Union[
-        str, Sequence[Union[str, MutableMapping[str, Any]]], MutableMapping[str, Any]
-    ]:
+    ) -> Union[str, Dict[str, Any], List[str], List[Dict[str, Any]]]:
         """Clean inputs to conform to Python naming conventions.
 
         This method tries to find the important string values in the
@@ -186,24 +220,52 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
 
         Parameters
         ----------
-        input_vars : Union[str, Iterable[Any], MutableMapping[str, Any]]
+        input_vars :  Union[
+            str,
+            Dict[str, Any],
+            Set[str],
+            Sequence[Dict[str, Any]],
+            List[str],
+        ]
             Input to be cleaned.
 
         Returns
         -------
-        Union[str, Iterable[Any], MutableMapping[str, Any]]
+        Union[str, Dict[str, Any], List[str], List[Dict[str, Any]]]
             Cleaned input.
         """
         if isinstance(input_vars, str):
-            return InventoryModule._to_snake_case(input_vars)
-        if isinstance(input_vars, MutableMapping):
-            return {InventoryModule.clean_vars(k): v for k, v in input_vars.items()}
-        if all(isinstance(i, (MutableMapping, str)) for i in input_vars):
-            return [InventoryModule.clean_vars(i) for i in input_vars]
+            return _to_snake_case(input_vars)
+        if isinstance(input_vars, dict):
+            return {clean_vars(k): v for k, v in input_vars.items()}
+        if all(isinstance(i, dict) for i in input_vars):
+            dict_list = cast(List[Dict[str, Any]], input_vars)
+            return [clean_vars(i) for i in dict_list]
+        if all(isinstance(i, str) for i in input_vars):
+            str_list = cast(List[str], input_vars)
+            return [_to_snake_case(i) for i in str_list]
         raise AnsibleInternalError(
             "clean_vars() was called with an unsupported type: %s"
             % to_native(type(input_vars))
         )
+
+    return clean_vars(variable)
+
+
+class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
+    """Main entrypoint for Ansible Inventory Plugin."""
+
+    # pylint: disable=too-many-instance-attributes
+
+    NAME = "solarwinds"
+
+    def __init__(self) -> None:
+        """Initialize InventoryModule and set defaults."""
+        super(InventoryModule, self).__init__()
+        self._plugin: str = ""
+        self._base_url: Url = Url()
+        self._credentials: Credentials = Credentials()
+        self._additional_properties: Optional[list[str]] = None
 
     def verify_file(self, path: AnyStr) -> bool:
         """Verify that this is a valid file to consume.
@@ -238,11 +300,8 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
         """Populate inventory."""
         _raw_inventory: Iterator[T] = QuerySolarwinds(
             self._base_url,
-            self._username,
-            self._password,
-            self._api_port,
+            self._credentials,
             self._additional_properties,
-            self._verify_ssl,
         )
 
         inventory_fields: list[str] = _raw_inventory.InventoryResponse
@@ -321,25 +380,25 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
     ) -> None:
         """Parse the inventory file."""
         super(InventoryModule, self).parse(inventory, loader, path, cache)
-        self._sanitize_group_name = InventoryModule.clean_vars
+        self._sanitize_group_name = variable_sanitizer
         display.vvv("Reading configuration data from: %s" % to_text(path))
         self._read_config_data(path)
         try:
             self._plugin: str = self.get_option("plugin")
             display.vvv("Found plugin name: %s" % to_text(self._plugin))
-            self._base_url: str = self.get_option("base_url")
-            display.vvv("Found server url: %s" % to_text(self._base_url))
-            self._username: str = self.get_option("username")
-            display.vvv("Found username.")
-            self._password: str = self.get_option("password")
-            display.vvv("Found password.")
+            self._base_url.base_url = self.get_option("base_url")
+            display.vvv("Found server url: %s" % to_text(self._base_url.base_url))
+            self._credentials = Credentials(
+                self.get_option("username"), self.get_option("password")
+            )
+            display.vvv("Found credentials.")
         except KeyError as exc:
             raise AnsibleParserError(
                 "All options required: %s" % to_native(exc),
                 show_content=False,
             ) from None
-        self._api_port = self.get_option("api_port")
-        self._verify_ssl = self.get_option("verify_ssl")
+        self._base_url.api_port = self.get_option("api_port")
+        self._base_url.verify_ssl = self.get_option("verify_ssl")
         self._additional_properties = self.get_option("additional_properties")
         self.compose = self.get_option("compose")
         self.groups = self.get_option("groups")
@@ -349,13 +408,15 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
 
 
 @dataclass
-class DynamicDT(Generic[DT]):
+class DynamicT(Generic[T]):
     pass
 
 
 @dataclass
 class ConnectionProfileResponse:
     """Container for the connection profile query response from the Solarwinds API."""
+
+    # pylint: disable=too-many-instance-attributes
 
     id_: int
     name: str
@@ -371,46 +432,39 @@ class ConnectionProfileResponse:
     use_for_auto_detect: bool
 
 
-class QuerySolarwinds(Iterator[DT]):
+class QuerySolarwinds(Iterator[T]):
     """Query Solarwinds NCM Cirrus.Nodes for inventory."""
 
-    _sanitize_names = InventoryModule.clean_vars
+    # pylint: disable=too-many-instance-attributes
 
     def __init__(
         self,
-        base_url: str,
-        username: str,
-        password: str,
-        port: int = 17778,
+        base_url: Url,
+        credentials: Credentials,
         additional_properties: Optional[list[str]] = None,
-        verify: bool = True,
     ) -> None:
         """Set default values and initialize Solarwinds connection.
 
         Parameters
         ----------
-        base_url : str
-            Base URL of the Solarwinds NCM server
-        username : str
-            Solarwinds username (with domain if applicable)
-        password : str
-            Solarwinds password
-        port : int, optional
-            API port of the Solarwinds NCM server, by default 17778
+        base_url: Url
+            The base url and options for the Solarwinds API.
+        credentials : Credentials
+            Solarwinds credentials
         additional_properties : Optional[list[str]], optional
             Additional properties to include in the inventory, by default None
-        verify : bool, optional
-            Verify TLS/SSL certificate, by default True
         """
         self.request = Request(
-            url_username=str(username),
-            url_password=str(password),
+            url_username=str(credentials.username),
+            url_password=str(credentials.password),
             headers={"Content-type": "application/json"},
-            validate_certs=verify,
+            validate_certs=base_url.verify_ssl,
         )
         self.base_url = base_url
-        self.port = port
-        self.url = f"{self.base_url}:{self.port}/SolarWinds/InformationService/v3/Json/"
+        self.url = (
+            f"{self.base_url.base_url}:{self.base_url.api_port}"
+            "/SolarWinds/InformationService/v3/Json/"
+        )
         self.inventory_payload = [
             "AgentIP",
             "SysName",
@@ -419,21 +473,21 @@ class QuerySolarwinds(Iterator[DT]):
             "OSVersion",
             "OSImage",
         ]
-        self._initial_inventory: Iterator[DT] = self._query_swis(
+        self._initial_inventory: Iterator[T] = self._query_swis(
             "InventoryResponse", self.inventory_payload
         )
         self._inventory = self._get_connection_profiles()
         if additional_properties is not None:
-            self._custom_properties: Iterator[DT] = self._query_swis(
+            self._custom_properties: Iterator[T] = self._query_swis(
                 "CustomProperties", additional_properties
             )
             self._inventory = itertools.chain(self._inventory, self._custom_properties)
 
-    def __next__(self) -> DT:
+    def __next__(self) -> T:
         """Return next item in the iterator."""
         return next(self._inventory)
 
-    def __iter__(self) -> Iterator[DT]:
+    def __iter__(self) -> Iterator[T]:
         """Yield the inventory items.
 
         This will always yield InventoryResponse items.
@@ -441,12 +495,12 @@ class QuerySolarwinds(Iterator[DT]):
 
         Yields
         ------
-        Iterator[DT]
+        Iterator[T]
             The next item in the iterator.
         """
         yield from self._inventory
 
-    @cache
+    @functools.cache
     def _get_connection_profile(
         self, profile_id: int
     ) -> Optional[ConnectionProfileResponse]:
@@ -458,11 +512,11 @@ class QuerySolarwinds(Iterator[DT]):
         response = self._post_message(payload, swis_action, entity, swis_verb)
         json_response: dict[str, Any] = json.load(response)
         if json_response:
-            cleaned_json = QuerySolarwinds._sanitize_names(json_response)
+            cleaned_json = variable_sanitizer(json_response)
             return ConnectionProfileResponse(**cleaned_json)
         return None
 
-    def _get_connection_profiles(self) -> Iterator[DT]:
+    def _get_connection_profiles(self) -> Iterator[T]:
         """Get connection profiles for each InventoryResponse item."""
         try:
             self.InventoryResponse.append("connection_profile_details")
@@ -479,7 +533,7 @@ class QuerySolarwinds(Iterator[DT]):
                 item.connection_profile_details = profile
                 yield item
 
-    def _query_swis(self, cls_name: str, node_fields: list[str]) -> Iterator[DT]:
+    def _query_swis(self, cls_name: str, node_fields: list[str]) -> Iterator[T]:
         """Send request to Solarwinds SWIS using SWQL and store response.
 
         Pass the response to the `_create_dynamic_dataclass` method to create a
@@ -495,7 +549,7 @@ class QuerySolarwinds(Iterator[DT]):
 
         Returns
         -------
-        Iterator[DT]
+        Iterator[T]
             The next item in the iterator.
         """
         if node_fields is None:
@@ -531,7 +585,7 @@ class QuerySolarwinds(Iterator[DT]):
 
         return (
             dynamic_dataclass(**result)
-            for result in QuerySolarwinds._sanitize_names(self._json_inventory_response)
+            for result in variable_sanitizer(self._json_inventory_response)
         )
 
     def _build_url(
@@ -622,9 +676,9 @@ class QuerySolarwinds(Iterator[DT]):
         type
             The dynamic dataclass.
         """
-        cleaned_fields = QuerySolarwinds._sanitize_names(node_fields)
+        cleaned_fields = variable_sanitizer(node_fields)
         dynamic_dataclass = make_dataclass(
-            cls_name, cleaned_fields, bases=(DynamicDT[DT],)
+            cls_name, cleaned_fields, bases=(DynamicT[T],)
         )
         setattr(self, cls_name, cleaned_fields)
 
