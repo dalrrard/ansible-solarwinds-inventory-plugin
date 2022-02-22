@@ -87,7 +87,6 @@ if TYPE_CHECKING:
 display = Display()
 
 T = TypeVar("T")  # pylint: disable=invalid-name
-# DT = TypeVar("DT")  # pylint: disable=invalid-name
 
 
 @dataclass
