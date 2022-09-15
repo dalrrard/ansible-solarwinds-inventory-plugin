@@ -3,7 +3,7 @@
 
 # Copyright: (c) 2021, Dalton Rardin
 # GNU General Public License v3.0+ (https://www.gnu.org/licenses/gpl-3.0.txt)
-from __future__ import absolute_import, division, print_function
+from __future__ import absolute_import, annotations, division, print_function
 
 __metaclass__ = type
 
@@ -62,7 +62,6 @@ from typing import (
     Sequence,
     Set,
     TypeVar,
-    Union,
     cast,
     overload,
 )
@@ -86,7 +85,7 @@ if TYPE_CHECKING:
 
 display = Display()
 
-T = TypeVar("T")  # pylint: disable=invalid-name
+T = TypeVar("T")
 
 
 @dataclass
@@ -132,14 +131,8 @@ def variable_sanitizer(variable: List[str]) -> List[str]:
 
 
 def variable_sanitizer(
-    variable: Union[
-        str,
-        Dict[str, Any],
-        Set[str],
-        Sequence[Dict[str, Any]],
-        List[str],
-    ]
-) -> Union[str, Dict[str, Any], List[str], List[Dict[str, Any]]]:
+    variable: str | Dict[str, Any] | Set[str] | Sequence[Dict[str, Any]] | List[str]
+) -> str | Dict[str, Any] | List[str] | List[Dict[str, Any]]:
     """Sanitize variable name for use in Ansible inventory."""
 
     def _fix_builtin_name_overrides(input_string: str) -> str:
@@ -202,14 +195,12 @@ def variable_sanitizer(
         ...
 
     def clean_vars(
-        input_vars: Union[
-            str,
-            Dict[str, Any],
-            Set[str],
-            Sequence[Dict[str, Any]],
-            List[str],
-        ]
-    ) -> Union[str, Dict[str, Any], List[str], List[Dict[str, Any]]]:
+        input_vars: str
+        | Dict[str, Any]
+        | Set[str]
+        | Sequence[Dict[str, Any]]
+        | List[str]
+    ) -> str | Dict[str, Any] | List[str] | List[Dict[str, Any]]:
         """Clean inputs to conform to Python naming conventions.
 
         This method tries to find the important string values in the
@@ -219,18 +210,16 @@ def variable_sanitizer(
 
         Parameters
         ----------
-        input_vars :  Union[
-            str,
-            Dict[str, Any],
-            Set[str],
-            Sequence[Dict[str, Any]],
-            List[str],
-        ]
+        input_vars :  str
+        | Dict[str, Any]
+        | Set[str]
+        | Sequence[Dict[str, Any]]
+        | List[str]
             Input to be cleaned.
 
         Returns
         -------
-        Union[str, Dict[str, Any], List[str], List[Dict[str, Any]]]
+        str | Dict[str, Any] | List[str] | List[Dict[str, Any]]
             Cleaned input.
         """
         if isinstance(input_vars, str):
@@ -332,11 +321,9 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
                 host_name,
                 self.strict,
             )
-            self._add_host_to_composed_groups(
-                self.groups, dict(), host_name, self.strict
-            )
+            self._add_host_to_composed_groups(self.groups, {}, host_name, self.strict)
             self._add_host_to_keyed_groups(
-                self.keyed_groups, dict(), host_name, self.strict
+                self.keyed_groups, {}, host_name, self.strict
             )
 
     def _set_credentials(self, item: T, host_name: str) -> None:
@@ -572,7 +559,7 @@ class QuerySolarwinds(Iterator[T]):
         response = self._post_message(payload, swis_action)
 
         try:
-            self._json_inventory_response: list[dict[str, Union[str, int]]] = json.load(
+            self._json_inventory_response: list[dict[str, str | int]] = json.load(
                 response
             )["results"]
         except KeyError:
@@ -616,7 +603,7 @@ class QuerySolarwinds(Iterator[T]):
 
     def _post_message(
         self,
-        payload: Union[dict[str, int], dict[str, str]],
+        payload: dict[str, int] | dict[str, str],
         swis_action: str,
         entity: Optional[str] = None,
         swis_verb: Optional[str] = None,
@@ -625,7 +612,7 @@ class QuerySolarwinds(Iterator[T]):
 
         Parameters
         ----------
-        payload : Union[dict[str, int], dict[str, str]]
+        payload : dict[str, int] | dict[str, str]
             The payload to POST to the Solarwinds API.
         swis_action : str
             The action to perform on the Solarwinds API.
