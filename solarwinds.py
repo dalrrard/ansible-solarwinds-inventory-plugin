@@ -36,11 +36,16 @@ DOCUMENTATION = r"""
             description: Verify SSL certificate
             required: false
             type: boolean
-            default: true
+            default: True
         additional_properties:
             description: Additional properties to include in the inventory
             required: false
             type: list
+        use_connection_profiles:
+            description: If True, use Solarwinds ConnectionProfile credentials for device access
+            required: false
+            type: boolean
+            default: False
     extends_documentation_fragment:
         - constructed
 """
@@ -290,6 +295,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
             self._base_url,
             self._credentials,
             self._additional_properties,
+            self._use_connection_profiles,
         )
 
         inventory_fields: list[str] = _raw_inventory.InventoryResponse
@@ -386,6 +392,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Generic[T]):
         self._base_url.api_port = self.get_option("api_port")
         self._base_url.verify_ssl = self.get_option("verify_ssl")
         self._additional_properties = self.get_option("additional_properties")
+        self._use_connection_profiles = self.get_option("use_connection_profiles")
         self.compose = self.get_option("compose")
         self.groups = self.get_option("groups")
         self.keyed_groups = self.get_option("keyed_groups")
@@ -428,6 +435,7 @@ class QuerySolarwinds(Iterator[T]):
         base_url: Url,
         credentials: Credentials,
         additional_properties: Optional[list[str]] = None,
+        use_connection_profiles: bool = False,
     ) -> None:
         """Set default values and initialize Solarwinds connection.
 
@@ -451,6 +459,7 @@ class QuerySolarwinds(Iterator[T]):
             f"{self.base_url.base_url}:{self.base_url.api_port}"
             "/SolarWinds/InformationService/v3/Json/"
         )
+        self.use_connection_profiles = use_connection_profiles
         self.inventory_payload = [
             "AgentIP",
             "SysName",
@@ -491,6 +500,10 @@ class QuerySolarwinds(Iterator[T]):
         self, profile_id: int
     ) -> Optional[ConnectionProfileResponse]:
         """Get connection profile from Solarwinds and store in dataclass."""
+        if not self.use_connection_profiles:
+            # Short circuit and return a dummy None if
+            # we don't want to use ConnectionProfiles
+            return None
         entity = "Cirrus.Nodes"
         swis_action = "Invoke"
         swis_verb = "GetConnectionProfile"

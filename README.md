@@ -113,6 +113,7 @@ additional_properties:
   - SiteID
 groups:
   cellular_routers: "'-4G' in inventory_hostname or '-4g' in inventory_hostname"
+use_connection_profiles: true
 ```
 
 The `additional_properties` option is a list of column names from `Cirrus.Nodes` that you want to group the inventory by. The plugin automatically retrieves these fields from `Cirrus.Nodes`:
